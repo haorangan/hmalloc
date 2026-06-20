@@ -13,6 +13,15 @@ endif()
 # Emit compile_commands.json for editor/LSP tooling.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Optional sanitizer build: -DHM_SANITIZE=address|thread|undefined (or a
+# comma-separated combo address,undefined). Applied to every target. Use thread
+# for the lock-free cross-thread paths; address/undefined for everything else.
+set(HM_SANITIZE "" CACHE STRING "Sanitizer(s) to build with (address|thread|undefined)")
+if(HM_SANITIZE)
+  add_compile_options(-fsanitize=${HM_SANITIZE} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${HM_SANITIZE})
+endif()
+
 # ----------------------------------------------------------------------------
 # Library
 # ----------------------------------------------------------------------------
@@ -59,6 +68,7 @@ add_unit_test(test_basic       tests/test_basic.cpp)
 add_unit_test(test_os          tests/test_os.cpp          LINK_INTERNAL)
 add_unit_test(test_size_class  tests/test_size_class.cpp  LINK_INTERNAL)
 add_unit_test(test_alloc       tests/test_alloc.cpp)
+add_unit_test(test_threads     tests/test_threads.cpp)
 
 # ----------------------------------------------------------------------------
 # Benchmarks
