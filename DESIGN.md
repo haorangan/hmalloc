@@ -1,8 +1,16 @@
 # hmalloc — Design
 
-This document describes the intended architecture of `hmalloc` and the reasoning
-behind each decision. It doubles as the implementation spec; sections are marked
-with the milestone (M1–M8) that lands them.
+This document describes the architecture of `hmalloc` and the reasoning behind
+each decision. It doubles as the implementation spec; sections are marked with
+the milestone (M1–M8) that lands them.
+
+> **Status:** all milestones (M1–M8) are implemented and live; the code maps to
+> the files in [`src/`](src/) (`os`, `size_class`, `segment`, `central`, `heap`,
+> `region_registry`, `hmalloc`). Two simplifications relative to the most
+> aggressive designs: abandoned pages from exited threads are reclaimed by a
+> central sweep once fully free (rather than adopted into another live heap), and
+> `free` recovers the block start by mask/shift only (no reciprocal-multiply
+> needed, because aligned allocations are placed on true block boundaries — §9).
 
 ## 1. Problem framing
 
