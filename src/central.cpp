@@ -1,5 +1,11 @@
 /*
  * hmalloc — central heap implementation (M3/M6). See central.h.
+ *
+ * Pages are pooled per segment (Segment::free_list) rather than in one global
+ * list, so the central heap can tell in O(1) when a whole segment has gone idle
+ * and hand it back to the OS. Segments with at least one free page are kept in a
+ * doubly-linked "available" list for O(1) page acquisition. One fully-free
+ * segment is cached to absorb churn; additional idle segments are unmapped.
  */
 #include "central.h"
 
@@ -11,12 +17,17 @@
 namespace hm {
 namespace {
 
+// Keep at most this many fully-free segments mapped; unmap the rest so RSS
+// follows the live set down after a spike.
+constexpr std::uint64_t SEGMENT_CACHE = 1;
+
 struct CentralState {
   std::mutex mtx;
-  Segment *segments = nullptr;     // all small segments (for stats / teardown)
-  Page *free_pages = nullptr;      // pool of usable pages, linked via Page::next
-  std::uint64_t free_page_count = 0;
+  Segment *segments = nullptr;    // all small segments (Segment::next)
+  Segment *avail = nullptr;       // segments with >= 1 free page (avail_*)
   std::uint64_t num_segments = 0;
+  std::uint64_t free_segments = 0;  // segments that are entirely free
+  std::uint64_t free_page_count = 0;
   std::uint64_t pages_in_use = 0;
 };
 
@@ -25,33 +36,66 @@ CentralState &central() {
   return s;
 }
 
-// Map a new small segment and push all its usable pages onto the free pool.
-// Caller must hold the lock. Returns false on OOM.
+void avail_push(CentralState &g, Segment *s) {
+  s->avail_prev = nullptr;
+  s->avail_next = g.avail;
+  if (g.avail != nullptr) g.avail->avail_prev = s;
+  g.avail = s;
+  s->in_avail = true;
+}
+
+void avail_remove(CentralState &g, Segment *s) {
+  if (s->avail_prev != nullptr)
+    s->avail_prev->avail_next = s->avail_next;
+  else
+    g.avail = s->avail_next;
+  if (s->avail_next != nullptr) s->avail_next->avail_prev = s->avail_prev;
+  s->avail_prev = s->avail_next = nullptr;
+  s->in_avail = false;
+}
+
+// Unlink a segment from the singly-linked all-segments list.
+void all_remove(CentralState &g, Segment *s) {
+  if (g.segments == s) {
+    g.segments = s->next;
+    return;
+  }
+  for (Segment *p = g.segments; p != nullptr; p = p->next) {
+    if (p->next == s) {
+      p->next = s->next;
+      return;
+    }
+  }
+}
+
+// Map a new segment and pool all its usable pages. Caller holds the lock.
 bool map_segment(CentralState &g) {
   void *mem = os_alloc_aligned(SEGMENT_SIZE, SEGMENT_SIZE);
   if (mem == nullptr) return false;
 
-  // Construct the header (zeroes the page metadata array, builds the atomics).
   Segment *s = new (mem) Segment();
   s->kind = SegmentKind::Small;
   s->page_count = static_cast<std::uint32_t>(PAGES_PER_SEGMENT);
   s->mmap_size = SEGMENT_SIZE;
-  s->free_pages = 0;
-  s->next = g.segments;
-  g.segments = s;
-  ++g.num_segments;
+  s->free_list = nullptr;
+  s->free_count = 0;
 
-  // Page 0 holds this header; pages 1..N-1 are data areas available for reuse.
   auto *base = reinterpret_cast<std::uint8_t *>(s);
   for (std::size_t i = FIRST_USABLE_PAGE; i < PAGES_PER_SEGMENT; ++i) {
     Page *pg = &s->pages[i];
     pg->area = base + i * PAGE_SIZE;
     pg->in_use = false;
-    pg->next = g.free_pages;
-    g.free_pages = pg;
-    ++g.free_page_count;
-    ++s->free_pages;
+    pg->next = s->free_list;
+    s->free_list = pg;
+    ++s->free_count;
   }
+  g.free_page_count += s->free_count;
+
+  s->next = g.segments;
+  g.segments = s;
+  ++g.num_segments;
+  ++g.free_segments;  // freshly mapped == fully free
+  avail_push(g, s);
   return true;
 }
 
@@ -62,16 +106,18 @@ Page *central_acquire_page(Heap *owner, std::uint32_t cls,
   CentralState &g = central();
   std::lock_guard<std::mutex> lk(g.mtx);
 
-  if (g.free_pages == nullptr && !map_segment(g)) return nullptr;
+  if (g.avail == nullptr && !map_segment(g)) return nullptr;
 
-  Page *pg = g.free_pages;
-  g.free_pages = pg->next;
+  Segment *s = g.avail;
+  if (s->free_count == USABLE_PAGES_PER_SEGMENT) --g.free_segments;
+  Page *pg = s->free_list;
+  s->free_list = pg->next;
+  --s->free_count;
   --g.free_page_count;
-  segment_of(pg->area)->free_pages--;
+  if (s->free_count == 0) avail_remove(g, s);
   ++g.pages_in_use;
 
-  // Initialize for use by `owner`'s class `cls`. The page starts empty; blocks
-  // are carved lazily from the bump area as the heap extends it.
+  // Initialize a fresh page; blocks are carved lazily by the owning heap.
   pg->free = nullptr;
   pg->used = 0;
   pg->capacity = static_cast<std::uint32_t>(PAGE_SIZE / block_size);
@@ -90,17 +136,33 @@ void central_release_page(Page *pg) {
   CentralState &g = central();
   std::lock_guard<std::mutex> lk(g.mtx);
 
+  Segment *s = segment_of(pg->area);
   pg->in_use = false;
   pg->owner = nullptr;
   pg->free = nullptr;
   pg->block_size = 0;
   pg->prev = nullptr;
-  pg->next = g.free_pages;
-  g.free_pages = pg;
+
+  const bool was_empty_segment = (s->free_count == 0);
+  pg->next = s->free_list;
+  s->free_list = pg;
+  ++s->free_count;
   ++g.free_page_count;
-  segment_of(pg->area)->free_pages++;
   --g.pages_in_use;
-  // M6 will additionally unmap or cache segments whose pages are all free.
+  if (was_empty_segment) avail_push(g, s);
+
+  if (s->free_count == USABLE_PAGES_PER_SEGMENT) {
+    ++g.free_segments;
+    // Beyond the cache budget, return the idle segment to the OS.
+    if (g.free_segments > SEGMENT_CACHE) {
+      avail_remove(g, s);
+      all_remove(g, s);
+      --g.num_segments;
+      --g.free_segments;
+      g.free_page_count -= USABLE_PAGES_PER_SEGMENT;
+      os_free(s, s->mmap_size);  // s is invalid after this
+    }
+  }
 }
 
 CentralStats central_stats() {

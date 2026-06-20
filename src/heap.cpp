@@ -132,6 +132,19 @@ void *heap_malloc_slow(Heap *h, std::uint32_t c) {
   return page_pop(np);
 }
 
+void heap_on_page_empty(Page *pg) {
+  // The page has no live blocks. Keep it if it is the active head for its class
+  // (so a balanced alloc/free workload doesn't churn pages with the central
+  // heap); otherwise unlink it and return it for reuse by any class.
+  Heap *h = pg->owner;
+  const std::uint32_t c = pg->size_class;
+  if (h->pages[c] == pg) return;
+
+  pg->prev->next = pg->next;  // pg is not the head, so pg->prev != null
+  if (pg->next != nullptr) pg->next->prev = pg->prev;
+  central_release_page(pg);
+}
+
 void heap_free_remote(Page *pg, void *p) {
   Block *b = static_cast<Block *>(p);
   Block *head = pg->thread_free.load(std::memory_order_relaxed);

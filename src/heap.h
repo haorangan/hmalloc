@@ -39,6 +39,7 @@ extern thread_local Heap *t_heap;
 Heap *heap_create();                                  // make + install t_heap
 void *heap_malloc_slow(Heap *h, std::uint32_t cls);   // refill + allocate
 void heap_free_remote(Page *pg, void *p);             // CAS onto thread_free
+void heap_on_page_empty(Page *pg);                    // page drained: maybe recycle
 
 // Get this thread's heap, creating it on first use.
 inline Heap *heap_get() {
@@ -69,7 +70,7 @@ inline void heap_free(void *p) {
     Block *b = static_cast<Block *>(p);
     b->next = pg->free;
     pg->free = b;
-    --pg->used;
+    if (--pg->used == 0) heap_on_page_empty(pg);  // page idle: maybe recycle
   } else {  // remote free (also covers t_heap == nullptr: a free-only thread)
     heap_free_remote(pg, p);
   }

@@ -66,13 +66,26 @@ struct alignas(CACHE_LINE) Page {
   alignas(CACHE_LINE) std::atomic<Block *> thread_free;
 };
 
-// Segment header, living at the base of a Small segment (page index 0).
+// Number of pages in a segment usable for allocations (page 0 is the header).
+inline constexpr std::size_t USABLE_PAGES_PER_SEGMENT =
+    PAGES_PER_SEGMENT - FIRST_USABLE_PAGE;
+
+// Segment header, living at the base of a Small segment (page index 0). All
+// fields after `kind` are owned by the central heap under its lock.
 struct alignas(CACHE_LINE) Segment {
   SegmentKind kind;            // MUST be first: shared tag with LargeHeader
   std::uint32_t page_count;    // PAGES_PER_SEGMENT
   std::size_t mmap_size;       // bytes mapped (== SEGMENT_SIZE for small)
   Segment *next;               // central heap's list of all small segments
-  std::uint32_t free_pages;    // usable pages not currently in use (central)
+  // Per-segment pool of currently-free pages (linked via Page::next). Keeping
+  // the pool per segment makes "is this segment fully free?" O(1) and lets a
+  // fully-free segment be unmapped without scanning a global free list.
+  Page *free_list;
+  std::uint32_t free_count;    // pages in free_list
+  // Membership in the central "segments with >= 1 free page" doubly-linked list.
+  Segment *avail_prev;
+  Segment *avail_next;
+  bool in_avail;
   Page pages[PAGES_PER_SEGMENT];
 };
 
