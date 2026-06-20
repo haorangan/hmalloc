@@ -17,6 +17,7 @@
 #include "central.h"
 #include "heap.h"
 #include "os.h"
+#include "region_registry.h"
 #include "segment.h"
 #include "size_class.h"
 
@@ -54,6 +55,7 @@ void *alloc_large(std::size_t size, std::size_t align) {
   h->req_size = size;
   g_large_count.fetch_add(1, std::memory_order_relaxed);
   g_large_bytes.fetch_add(mmap_size, std::memory_order_relaxed);
+  region_register(mem);
   // The user pointer stays within the first segment of the region, so masking
   // recovers this header even for multi-segment (huge) allocations.
   return static_cast<std::uint8_t *>(mem) + offset;
@@ -64,6 +66,7 @@ void free_large(void *p) {
   const std::size_t msz = h->mmap_size;
   g_large_count.fetch_sub(1, std::memory_order_relaxed);
   g_large_bytes.fetch_sub(msz, std::memory_order_relaxed);
+  region_unregister(h);
   os_free(h, msz);
 }
 

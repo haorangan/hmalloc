@@ -25,17 +25,30 @@ endif()
 # ----------------------------------------------------------------------------
 # Library
 # ----------------------------------------------------------------------------
-add_library(hmalloc STATIC
+set(HM_LIB_SRCS
   src/os.cpp
   src/central.cpp
   src/heap.cpp
+  src/region_registry.cpp
   src/hmalloc.cpp
 )
+
+add_library(hmalloc STATIC ${HM_LIB_SRCS})
 target_include_directories(hmalloc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(hmalloc PUBLIC cxx_std_20)
 target_compile_options(hmalloc PRIVATE -Wall -Wextra -Wpedantic)
 find_package(Threads REQUIRED)
 target_link_libraries(hmalloc PUBLIC Threads::Threads)
+
+# Optional drop-in malloc replacement (LD_PRELOAD / DYLD_INSERT_LIBRARIES).
+option(HMALLOC_OVERRIDE "Build libhmalloc_override drop-in malloc shim" OFF)
+if(HMALLOC_OVERRIDE)
+  add_library(hmalloc_override SHARED src/override.cpp ${HM_LIB_SRCS})
+  target_include_directories(hmalloc_override PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(hmalloc_override PUBLIC cxx_std_20)
+  target_compile_options(hmalloc_override PRIVATE -Wall -Wextra)
+  target_link_libraries(hmalloc_override PUBLIC Threads::Threads)
+endif()
 
 # ----------------------------------------------------------------------------
 # Tests
@@ -72,8 +85,7 @@ add_unit_test(test_threads     tests/test_threads.cpp)
 
 # test_stats compiles the whole allocator with -DHMALLOC_STATS so the call-count
 # fields are populated end to end.
-add_executable(test_stats tests/test_stats.cpp
-  src/os.cpp src/central.cpp src/heap.cpp src/hmalloc.cpp)
+add_executable(test_stats tests/test_stats.cpp ${HM_LIB_SRCS})
 target_include_directories(test_stats PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(test_stats PRIVATE HMALLOC_STATS)
 target_compile_options(test_stats PRIVATE -Wall -Wextra)

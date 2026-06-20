@@ -19,6 +19,7 @@
 #include <new>
 
 #include "os.h"
+#include "region_registry.h"
 
 namespace hm {
 namespace {
@@ -112,6 +113,7 @@ void pool_return(CentralState &g, Page *pg) {
       --g.num_segments;
       --g.free_segments;
       g.free_page_count -= USABLE_PAGES_PER_SEGMENT;
+      region_unregister(s);
       os_free(s, s->mmap_size);  // s is invalid after this
     }
   }
@@ -177,6 +179,7 @@ bool map_segment(CentralState &g) {
   ++g.num_segments;
   ++g.free_segments;
   avail_push(g, s);
+  region_register(s);
   return true;
 }
 
