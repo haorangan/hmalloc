@@ -1,0 +1,14 @@
+# Build output
+/build/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+compile_commands.json
