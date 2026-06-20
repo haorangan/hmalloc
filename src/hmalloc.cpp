@@ -9,10 +9,12 @@
  */
 #include "hmalloc/hmalloc.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <new>
 
+#include "central.h"
 #include "heap.h"
 #include "os.h"
 #include "segment.h"
@@ -21,6 +23,10 @@
 using namespace hm;
 
 namespace {
+
+// Live large-allocation accounting (the large path is rare, so atomics are fine).
+std::atomic<std::size_t> g_large_count{0};
+std::atomic<std::size_t> g_large_bytes{0};
 
 constexpr std::size_t round_up(std::size_t n, std::size_t a) {
   return (n + (a - 1)) & ~(a - 1);
@@ -46,6 +52,8 @@ void *alloc_large(std::size_t size, std::size_t align) {
   h->mmap_size = mmap_size;
   h->offset = offset;
   h->req_size = size;
+  g_large_count.fetch_add(1, std::memory_order_relaxed);
+  g_large_bytes.fetch_add(mmap_size, std::memory_order_relaxed);
   // The user pointer stays within the first segment of the region, so masking
   // recovers this header even for multi-segment (huge) allocations.
   return static_cast<std::uint8_t *>(mem) + offset;
@@ -53,7 +61,10 @@ void *alloc_large(std::size_t size, std::size_t align) {
 
 void free_large(void *p) {
   auto *h = static_cast<LargeHeader *>(region_base(p));
-  os_free(h, h->mmap_size);
+  const std::size_t msz = h->mmap_size;
+  g_large_count.fetch_sub(1, std::memory_order_relaxed);
+  g_large_bytes.fetch_sub(msz, std::memory_order_relaxed);
+  os_free(h, msz);
 }
 
 }  // namespace
@@ -139,6 +150,27 @@ size_t hm_usable_size(void *ptr) {
   }
   Segment *s = segment_of(ptr);
   return page_of(s, ptr)->block_size;
+}
+
+hm_stats_t hm_stats(void) {
+  hm_stats_t out;
+  std::memset(&out, 0, sizeof(out));
+
+  const OsStats os = os_stats();
+  out.bytes_reserved = os.bytes_mapped;
+  out.peak_bytes_reserved = os.peak_mapped;
+
+  const CentralStats c = central_stats();
+  out.segments_mapped = c.segments;
+  out.pages_in_use = c.pages_in_use;
+  out.pages_free = c.free_pages;
+
+  out.large_allocations = g_large_count.load(std::memory_order_relaxed);
+  out.large_bytes = g_large_bytes.load(std::memory_order_relaxed);
+
+  heap_global_counts(&out.malloc_count, &out.fast_path_count,
+                     &out.slow_path_count);
+  return out;
 }
 
 }  // extern "C"

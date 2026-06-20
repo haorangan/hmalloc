@@ -70,6 +70,16 @@ add_unit_test(test_size_class  tests/test_size_class.cpp  LINK_INTERNAL)
 add_unit_test(test_alloc       tests/test_alloc.cpp)
 add_unit_test(test_threads     tests/test_threads.cpp)
 
+# test_stats compiles the whole allocator with -DHMALLOC_STATS so the call-count
+# fields are populated end to end.
+add_executable(test_stats tests/test_stats.cpp
+  src/os.cpp src/central.cpp src/heap.cpp src/hmalloc.cpp)
+target_include_directories(test_stats PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(test_stats PRIVATE HMALLOC_STATS)
+target_compile_options(test_stats PRIVATE -Wall -Wextra)
+target_link_libraries(test_stats PRIVATE Threads::Threads)
+add_test(NAME test_stats COMMAND test_stats)
+
 # ----------------------------------------------------------------------------
 # Benchmarks
 # ----------------------------------------------------------------------------

@@ -16,6 +16,7 @@
 #ifndef HMALLOC_HEAP_H
 #define HMALLOC_HEAP_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -29,7 +30,20 @@ struct Heap {
   // A fresh heap points every entry at a shared empty sentinel whose free list
   // is always null, so the fast path falls straight through to the slow path.
   Page *pages[kNumSizeClasses];
+
+  // Per-thread statistics counters. Updated only under -DHMALLOC_STATS (the hot
+  // path is counter-free otherwise). Atomic so hm_stats() can sum across live
+  // heaps without a data race; the owner increments with relaxed ordering.
+  std::atomic<unsigned long long> n_malloc{0};
+  std::atomic<unsigned long long> n_fast{0};
+  std::atomic<unsigned long long> n_slow{0};
+
+  Heap *reg_next = nullptr;  // global heap registry (for hm_stats)
 };
+
+// Sum the per-heap counters across every live heap (for hm_stats).
+void heap_global_counts(unsigned long long *malloc_count,
+                        unsigned long long *fast, unsigned long long *slow);
 
 // The current thread's heap pointer (null until this thread first allocates).
 // Declared here so the inline hot paths can read it without a function call.
@@ -52,11 +66,17 @@ inline Heap *heap_get() {
 inline void *heap_malloc(std::size_t size) {
   const std::uint32_t c = size_class(size);
   Heap *h = heap_get();
+#ifdef HMALLOC_STATS
+  h->n_malloc.fetch_add(1, std::memory_order_relaxed);
+#endif
   Page *p = h->pages[c];
   Block *b = p->free;
   if (b != nullptr) {
     p->free = b->next;
     ++p->used;
+#ifdef HMALLOC_STATS
+    h->n_fast.fetch_add(1, std::memory_order_relaxed);
+#endif
     return b;
   }
   return heap_malloc_slow(h, c);

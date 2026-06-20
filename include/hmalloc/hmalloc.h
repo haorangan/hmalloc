@@ -35,6 +35,27 @@ void *hm_aligned_alloc(size_t alignment, size_t size);
 /* Number of usable bytes in the allocation `ptr` points at (>= requested). */
 size_t hm_usable_size(void *ptr);
 
+/* Live allocator statistics. The memory/structure fields are always populated;
+ * the call-count fields are tracked only when hmalloc is built with
+ * -DHMALLOC_STATS (otherwise they read 0), so the hot path stays free of
+ * counters in the default build. Snapshots are intended to be read at a quiet
+ * point; counters may lag slightly under concurrent allocation. */
+typedef struct hm_stats_t {
+  size_t bytes_reserved;       /* bytes currently mapped from the OS */
+  size_t peak_bytes_reserved;  /* high-water mark of bytes_reserved */
+  size_t segments_mapped;      /* small segments currently mapped */
+  size_t pages_in_use;         /* small pages owned by a live thread heap */
+  size_t pages_free;           /* small pages pooled for reuse */
+  size_t large_allocations;    /* live large (> small threshold) allocations */
+  size_t large_bytes;          /* bytes mapped for live large allocations */
+  unsigned long long malloc_count;     /* hm_malloc calls (small path) */
+  unsigned long long fast_path_count;  /* served from a thread-local free list */
+  unsigned long long slow_path_count;  /* needed refill/collect/new page */
+} hm_stats_t;
+
+/* Snapshot the live statistics above. */
+hm_stats_t hm_stats(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

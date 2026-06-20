@@ -3,6 +3,7 @@
  */
 #include "heap.h"
 
+#include <mutex>
 #include <new>
 
 #include "central.h"
@@ -11,6 +12,27 @@
 namespace hm {
 
 thread_local Heap *t_heap = nullptr;
+
+namespace {
+// Registry of all live heaps, so hm_stats() can sum per-thread counters. Touched
+// only on thread create/exit and by hm_stats(), never on the allocation path.
+std::mutex g_registry_mtx;
+Heap *g_registry = nullptr;
+}  // namespace
+
+void heap_global_counts(unsigned long long *malloc_count,
+                        unsigned long long *fast, unsigned long long *slow) {
+  unsigned long long m = 0, f = 0, s = 0;
+  std::lock_guard<std::mutex> lk(g_registry_mtx);
+  for (Heap *h = g_registry; h != nullptr; h = h->reg_next) {
+    m += h->n_malloc.load(std::memory_order_relaxed);
+    f += h->n_fast.load(std::memory_order_relaxed);
+    s += h->n_slow.load(std::memory_order_relaxed);
+  }
+  *malloc_count = m;
+  *fast = f;
+  *slow = s;
+}
 
 namespace {
 
@@ -116,6 +138,15 @@ void heap_destroy(Heap *h) {
     }
     h->pages[c] = &g_empty_page;
   }
+  {
+    std::lock_guard<std::mutex> lk(g_registry_mtx);
+    for (Heap **pp = &g_registry; *pp != nullptr; pp = &(*pp)->reg_next) {
+      if (*pp == h) {
+        *pp = h->reg_next;
+        break;
+      }
+    }
+  }
   os_free(h, heap_bytes());
 }
 
@@ -138,6 +169,11 @@ Heap *heap_create() {
   if (mem == nullptr) return nullptr;  // OOM: caller's malloc returns null
   Heap *h = new (mem) Heap();
   for (std::uint32_t c = 0; c < kNumSizeClasses; ++c) h->pages[c] = &g_empty_page;
+  {
+    std::lock_guard<std::mutex> lk(g_registry_mtx);
+    h->reg_next = g_registry;
+    g_registry = h;
+  }
   t_heap = h;
   t_guard.armed = true;  // touch the guard so its thread-exit destructor runs
   return h;
@@ -145,6 +181,9 @@ Heap *heap_create() {
 
 void *heap_malloc_slow(Heap *h, std::uint32_t c) {
   if (h == nullptr) return nullptr;  // heap_create failed upstream
+#ifdef HMALLOC_STATS
+  h->n_slow.fetch_add(1, std::memory_order_relaxed);
+#endif
 
   Page *head = h->pages[c];
   if (head != &g_empty_page) {
