@@ -13,20 +13,52 @@ endif()
 # Emit compile_commands.json for editor/LSP tooling.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ----------------------------------------------------------------------------
+# Library
+# ----------------------------------------------------------------------------
 add_library(hmalloc STATIC
+  src/os.cpp
   src/hmalloc.cpp
 )
 target_include_directories(hmalloc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(hmalloc PUBLIC cxx_std_20)
 target_compile_options(hmalloc PRIVATE -Wall -Wextra -Wpedantic)
+find_package(Threads REQUIRED)
+target_link_libraries(hmalloc PUBLIC Threads::Threads)
 
+# ----------------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------------
 enable_testing()
 
-add_executable(test_basic tests/test_basic.cpp)
-target_link_libraries(test_basic PRIVATE hmalloc)
-target_compile_options(test_basic PRIVATE -Wall -Wextra)
-add_test(NAME test_basic COMMAND test_basic)
+# Some unit tests link the allocator's internal .cpp files directly so they can
+# exercise modules below the public API. Keep that list in sync as modules land.
+set(HM_INTERNAL_SRCS
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/os.cpp
+)
 
+# add_unit_test(<name> <src> [LINK_INTERNAL])
+#   LINK_INTERNAL also compiles the internal sources for white-box tests.
+function(add_unit_test name src)
+  cmake_parse_arguments(ARG "LINK_INTERNAL" "" "" ${ARGN})
+  if(ARG_LINK_INTERNAL)
+    add_executable(${name} ${src} ${HM_INTERNAL_SRCS})
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  else()
+    add_executable(${name} ${src})
+    target_link_libraries(${name} PRIVATE hmalloc)
+  endif()
+  target_link_libraries(${name} PRIVATE Threads::Threads)
+  target_compile_options(${name} PRIVATE -Wall -Wextra)
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+add_unit_test(test_basic  tests/test_basic.cpp)
+add_unit_test(test_os     tests/test_os.cpp     LINK_INTERNAL)
+
+# ----------------------------------------------------------------------------
+# Benchmarks
+# ----------------------------------------------------------------------------
 add_executable(bench bench/bench.cpp)
-target_link_libraries(bench PRIVATE hmalloc)
+target_link_libraries(bench PRIVATE hmalloc Threads::Threads)
 target_compile_options(bench PRIVATE -Wall -Wextra)
