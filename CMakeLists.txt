@@ -53,8 +53,9 @@ function(add_unit_test name src)
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-add_unit_test(test_basic  tests/test_basic.cpp)
-add_unit_test(test_os     tests/test_os.cpp     LINK_INTERNAL)
+add_unit_test(test_basic       tests/test_basic.cpp)
+add_unit_test(test_os          tests/test_os.cpp          LINK_INTERNAL)
+add_unit_test(test_size_class  tests/test_size_class.cpp  LINK_INTERNAL)
 
 # ----------------------------------------------------------------------------
 # Benchmarks
