@@ -66,7 +66,7 @@ inline void *heap_malloc(std::size_t size) {
 inline void heap_free(void *p) {
   Segment *s = segment_of(p);
   Page *pg = page_of(s, p);
-  if (pg->owner == t_heap) {  // local free: this thread owns the page
+  if (pg->owner.load(std::memory_order_relaxed) == t_heap) {  // local free
     Block *b = static_cast<Block *>(p);
     b->next = pg->free;
     pg->free = b;

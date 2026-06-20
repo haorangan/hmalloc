@@ -196,4 +196,57 @@ TEST(free_only_threads) {
   }
 }
 
+TEST(spawn_join_churn) {
+  // Many short-lived threads, each allocating then freeing everything before it
+  // exits. Exercises the thread-exit path that releases a heap's empty pages.
+  const int rounds = 40;
+  const unsigned T = hw_threads();
+  std::atomic<int> bad{0};
+  for (int r = 0; r < rounds; ++r) {
+    std::vector<std::thread> ts;
+    for (unsigned t = 0; t < T; ++t) {
+      ts.emplace_back([&, r, t]() {
+        std::vector<Item> live;
+        std::uint64_t id = ((static_cast<std::uint64_t>(r) * 64 + t) << 32) + 1;
+        for (int i = 0; i < 4000; ++i) live.push_back(make_item(id++));
+        for (Item &it : live) {
+          if (!check_item(it)) ++bad;
+          hm_free(it.p);
+        }
+      });
+    }
+    for (auto &th : ts) th.join();
+  }
+  CHECK_EQ(bad.load(), 0);
+}
+
+TEST(abandon_then_free_on_another_thread) {
+  // A worker allocates objects that outlive it: the worker exits (its pages are
+  // abandoned with live objects), then the main thread frees them all (remote
+  // frees onto abandoned pages) and allocates again (driving central reclaim).
+  const int N = 100000;
+  std::vector<Item> items;
+  std::thread producer([&]() {
+    items.resize(N);
+    for (int i = 0; i < N; ++i) items[i] = make_item(static_cast<std::uint64_t>(i) + 1);
+  });
+  producer.join();  // producer's heap is now torn down; its pages abandoned
+
+  int bad = 0;
+  for (int i = 0; i < N; ++i) {
+    if (!check_item(items[i])) ++bad;
+    hm_free(items[i].p);
+  }
+  CHECK_EQ(bad, 0);
+
+  // Allocating now must be able to reclaim the swept-clean abandoned pages.
+  std::vector<void *> ps;
+  for (int i = 0; i < 50000; ++i) {
+    void *p = hm_malloc(8 + (i % 1500));
+    CHECK(p != nullptr);
+    ps.push_back(p);
+  }
+  for (void *p : ps) hm_free(p);
+}
+
 int main() { return hm_test::run_all(); }

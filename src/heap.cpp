@@ -92,16 +92,54 @@ void heap_rotate_to_front(Heap *h, std::uint32_t c, Page *p) {
   h->pages[c] = p;
 }
 
+// Bytes reserved from the OS for one Heap (page-rounded).
+std::size_t heap_bytes() {
+  const std::size_t ps = os_page_size();
+  return (sizeof(Heap) + ps - 1) & ~(ps - 1);
+}
+
+// Hand this thread's heap back at thread exit. Each page is first collected (we
+// are still the owner, so this is safe); fully-free pages are released to the
+// central heap, pages with live objects are abandoned for central reclamation.
+void heap_destroy(Heap *h) {
+  for (std::uint32_t c = 0; c < kNumSizeClasses; ++c) {
+    Page *p = h->pages[c];
+    if (p == &g_empty_page) continue;
+    while (p != nullptr && p != &g_empty_page) {
+      Page *nx = p->next;
+      page_collect(p);
+      if (p->used == 0)
+        central_release_page(p);
+      else
+        central_abandon_page(p);
+      p = nx;
+    }
+    h->pages[c] = &g_empty_page;
+  }
+  os_free(h, heap_bytes());
+}
+
+// Destroys this thread's heap when the thread exits (thread_local destructor).
+struct HeapGuard {
+  bool armed = false;
+  ~HeapGuard() {
+    if (t_heap != nullptr) {
+      heap_destroy(t_heap);
+      t_heap = nullptr;
+    }
+  }
+};
+thread_local HeapGuard t_guard;
+
 }  // namespace
 
 Heap *heap_create() {
-  const std::size_t ps = os_page_size();
-  const std::size_t bytes = (sizeof(Heap) + ps - 1) & ~(ps - 1);
-  void *mem = os_alloc_aligned(bytes, ps);
+  void *mem = os_alloc_aligned(heap_bytes(), os_page_size());
   if (mem == nullptr) return nullptr;  // OOM: caller's malloc returns null
   Heap *h = new (mem) Heap();
   for (std::uint32_t c = 0; c < kNumSizeClasses; ++c) h->pages[c] = &g_empty_page;
   t_heap = h;
+  t_guard.armed = true;  // touch the guard so its thread-exit destructor runs
   return h;
 }
 
@@ -136,7 +174,7 @@ void heap_on_page_empty(Page *pg) {
   // The page has no live blocks. Keep it if it is the active head for its class
   // (so a balanced alloc/free workload doesn't churn pages with the central
   // heap); otherwise unlink it and return it for reuse by any class.
-  Heap *h = pg->owner;
+  Heap *h = pg->owner.load(std::memory_order_relaxed);
   const std::uint32_t c = pg->size_class;
   if (h->pages[c] == pg) return;
 

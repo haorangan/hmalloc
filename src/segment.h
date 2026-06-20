@@ -57,7 +57,11 @@ struct alignas(CACHE_LINE) Page {
   std::uint32_t block_size;   // bytes per block (0 if page is unused)
   std::uint32_t size_class;   // class index this page serves
   bool in_use;                // assigned to a class (vs. free in central heap)
-  Heap *owner;                // owning thread heap
+  // Owning thread heap. Atomic because a remote freer reads it on the lock-free
+  // path while thread-exit may be clearing it (abandonment). Any observed value
+  // other than the reader's own heap routes to the remote path, which is always
+  // correct, so the hot read can be relaxed.
+  std::atomic<Heap *> owner;
   Page *next;                 // links: heap per-class list, or central free list
   Page *prev;                 // (prev only used by the heap's doubly-linked list)
   std::uint8_t *area;         // base of this page's data region

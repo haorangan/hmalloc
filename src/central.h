@@ -24,6 +24,13 @@ Page *central_acquire_page(Heap *owner, std::uint32_t cls,
 // Return a now-empty page to the central pool for reuse by any size class.
 void central_release_page(Page *pg);
 
+// Hand a page that still has live objects to the central heap on thread exit.
+// Its owner is cleared; remaining objects (freed later by other threads onto the
+// page's thread_free list) are collected by a central sweep, and the page is
+// reclaimed once it is fully free. The page must have been collected by its
+// owner immediately before this call.
+void central_abandon_page(Page *pg);
+
 // Snapshot of central-heap occupancy, for hm_stats().
 struct CentralStats {
   std::uint64_t segments;      // small segments currently mapped
