@@ -76,8 +76,10 @@ inline constexpr SizeClasses kTable = build_size_classes();
 
 }  // namespace detail
 
-// Number of small size classes.
-inline constexpr std::uint32_t num_size_classes() { return detail::kTable.count; }
+// Number of small size classes. Available both as a function and as a constant
+// usable for array sizing (e.g. Heap::pages[kNumSizeClasses]).
+inline constexpr std::uint32_t kNumSizeClasses = detail::kTable.count;
+inline constexpr std::uint32_t num_size_classes() { return kNumSizeClasses; }
 
 // Block size served by class index `c`.
 inline constexpr std::uint32_t class_to_size(std::uint32_t c) {

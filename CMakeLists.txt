@@ -18,6 +18,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ----------------------------------------------------------------------------
 add_library(hmalloc STATIC
   src/os.cpp
+  src/central.cpp
   src/hmalloc.cpp
 )
 target_include_directories(hmalloc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
