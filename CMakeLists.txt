@@ -58,6 +58,7 @@ endfunction()
 add_unit_test(test_basic       tests/test_basic.cpp)
 add_unit_test(test_os          tests/test_os.cpp          LINK_INTERNAL)
 add_unit_test(test_size_class  tests/test_size_class.cpp  LINK_INTERNAL)
+add_unit_test(test_alloc       tests/test_alloc.cpp)
 
 # ----------------------------------------------------------------------------
 # Benchmarks
