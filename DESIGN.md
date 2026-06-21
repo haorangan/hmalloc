@@ -4,13 +4,19 @@ This document describes the architecture of `hmalloc` and the reasoning behind
 each decision. It doubles as the implementation spec; sections are marked with
 the milestone (M1–M8) that lands them.
 
-> **Status:** all milestones (M1–M8) are implemented and live; the code maps to
-> the files in [`src/`](src/) (`os`, `size_class`, `segment`, `central`, `heap`,
-> `region_registry`, `hmalloc`). Two simplifications relative to the most
-> aggressive designs: abandoned pages from exited threads are reclaimed by a
-> central sweep once fully free (rather than adopted into another live heap), and
-> `free` recovers the block start by mask/shift only (no reciprocal-multiply
-> needed, because aligned allocations are placed on true block boundaries — §9).
+Everything described here is implemented. The sections map onto the files in
+[`src/`](src/): the OS layer is `os`, size classes are `size_class`, the segment
+and page structures are `segment`, the per-thread heap is `heap`, the shared pool
+is `central`, and the public API is `hmalloc`.
+
+Two places where the implementation takes a simpler road than the most aggressive
+allocators are worth calling out up front. When a thread exits holding pages that
+still have live objects, those pages are reclaimed by a sweep in the central heap
+once their last object is freed, rather than being adopted into another running
+thread's heap. And `free` finds the start of a block with a mask and a shift
+instead of the reciprocal-multiply trick mimalloc uses, because aligned
+allocations are already placed on real block boundaries (see §9), so there is no
+interior pointer to round down.
 
 ## 1. Problem framing
 
