@@ -1,20 +1,21 @@
 # hmalloc
 
-hmalloc is a `malloc`/`free` replacement for C and C++, written from scratch. It
-borrows its structure from [mimalloc](https://github.com/microsoft/mimalloc) and
-[tcmalloc](https://github.com/google/tcmalloc): requests are rounded to a set of
-size classes, each thread gets its own heap so the common path takes no locks,
-and a free that comes from a different thread is parked on a separate per-page
-list so it never gets in the way of the thread that owns the memory.
+hmalloc is a `malloc` and `free` replacement for C and C++, written from scratch.
+It borrows its structure from [mimalloc](https://github.com/microsoft/mimalloc)
+and [tcmalloc](https://github.com/google/tcmalloc). Requests are rounded to a set
+of size classes, each thread gets its own heap so that the common path takes no
+locks, and a free that arrives from a different thread is parked on a separate
+per-page list so that it never slows down the thread that owns the memory.
 
-It isn't trying to beat those allocators. The point was to build the parts that
-make a modern allocator fast, understand why each one matters, and back the
-claims with benchmarks you can run yourself.
+It is not trying to beat those allocators. The point was to build the parts that
+make a modern allocator fast, to understand why each one matters, and to back the
+claims with benchmarks that you can run yourself.
 
-The allocator is finished — all the milestones at the bottom are done. Small
-objects come from per-thread heaps carved out of 4 MiB `mmap`'d segments; anything
-over 16 KiB gets its own region. Cross-thread frees use a lock-free per-page list.
-The whole test suite runs clean under ThreadSanitizer and UBSan.
+The allocator is finished, and every milestone listed at the bottom is done.
+Small objects come from per-thread heaps that are carved out of 4 MiB segments
+obtained with `mmap`, while any request larger than 16 KiB gets its own region.
+Frees that cross threads use a lock-free per-page list. The whole test suite runs
+clean under ThreadSanitizer and UBSan.
 
 ## How it works
 
@@ -28,20 +29,21 @@ malloc(sz) ──► size class ──► thread-local free list (pop)        �
                             central heap  ──► segment (mmap'd, aligned region)
 ```
 
-Most calls never get past the first line: pop a block off the current thread's
-free list for that size class and return it. No lock, no atomic, no syscall.
+Most calls never get past the first line. The allocator pops a block off the
+current thread's free list for that size class and returns it, and that path does
+not take a lock, perform an atomic operation, or make a system call.
 
-What makes `free` just as cheap is that segments are aligned to their own size.
-Given any pointer, masking off the low bits lands on the segment header, and a
-shift picks out the page inside it — and the page already records its size class
-and which thread owns it. So `free` finds everything it needs with a couple of
-instructions and no global lookup table. The reasoning behind the rest of the
-design is in [DESIGN.md](DESIGN.md).
+Freeing is cheap for a different reason, which is that segments are aligned to
+their own size. Given any pointer, masking off the low bits lands on the segment
+header, and a shift selects the page inside it. Because each page already records
+its size class and the thread that owns it, `free` recovers everything it needs
+with a couple of instructions and without consulting any global table. The rest of
+the reasoning behind the design is written up in [DESIGN.md](DESIGN.md).
 
 ## Building
 
-You need a C++20 compiler. It's been built with Apple Clang on arm64 and with
-LLVM/GCC on x86-64 Linux.
+You need a C++20 compiler. The code has been built with Apple Clang on arm64 and
+with LLVM and GCC on x86-64 Linux.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -52,19 +54,20 @@ ctest --test-dir build --output-on-failure   # tests
 ```
 
 The concurrency code is the easiest part to get subtly wrong, so the threaded
-tests are also run under sanitizers in CI-style checks:
+tests are also run under sanitizers.
 
 ```sh
 cmake -S . -B build-tsan -DHM_SANITIZE=thread && cmake --build build-tsan
 ./build-tsan/test_threads
 ```
 
-`HM_SANITIZE` also takes `address` or `undefined`.
+The `HM_SANITIZE` option also accepts `address` and `undefined`.
 
 ## Using it as your allocator
 
-Build the override library and preload it; the standard C entry points and the
-C++ `operator new`/`delete` family all route through hmalloc with no recompile:
+Build the override library and preload it. The standard C entry points and the
+C++ `operator new` and `operator delete` family all route through hmalloc without
+recompiling your program.
 
 ```sh
 cmake -S . -B build -DHMALLOC_OVERRIDE=ON && cmake --build build
@@ -74,25 +77,27 @@ DYLD_INSERT_LIBRARIES=./build/libhmalloc_override.dylib \         # macOS
   DYLD_FORCE_FLAT_NAMESPACE=1 ./your_program
 ```
 
-A program that's fully interposed will hand back the odd pointer that some other
-allocator produced before the override was live (allocations made during process
-startup, mostly). Those get forwarded to the real `free` instead of being treated
-as ours. The check looks the pointer up in a registry of regions hmalloc mapped,
-so it decides from the address alone and never dereferences a pointer it didn't
-hand out.
+When a program is fully interposed it will occasionally hand back a pointer that
+some other allocator produced before the override became active, which usually
+means an allocation made during process startup. Those pointers are forwarded to
+the real `free` instead of being treated as ours. The check looks the pointer up
+in a registry of the regions that hmalloc has mapped, so it decides from the
+address alone and never dereferences a pointer that it did not hand out.
 
-If you call the API directly, `hm_stats()` returns the live picture — bytes
-mapped, segments, pages in use, large allocations. Building with `-DHMALLOC_STATS`
-adds malloc/fast-path/slow-path counts; they're off by default so the fast path
-carries no counters.
+If you call the API directly, `hm_stats()` returns the live picture, including
+bytes mapped, segments, pages in use, and large allocations. Building with
+`-DHMALLOC_STATS` adds counts of total allocations and of how often the fast and
+slow paths were taken. Those counters are off by default so that the fast path
+carries no extra work.
 
 ## Benchmarks
 
-Numbers below are from an Apple M-class machine (arm64, 10 cores, Release build),
-where one "op" is a `malloc` plus a `free` with a write in between. They compare
-against the macOS system allocator. Treat them as a rough picture of where the
-design helps, not a promise about your workload — and if you want a fairer fight,
-preload jemalloc or mimalloc and run the same `./build/bench`.
+The numbers below come from an Apple M-class machine with 10 cores running a
+Release build, where one operation is a `malloc` followed by a `free` with a write
+in between. They are measured against the macOS system allocator. They should be
+read as a rough picture of where the design helps rather than a promise about your
+own workload, and if you want a fairer comparison you can preload jemalloc or
+mimalloc and run the same `./build/bench`.
 
 | Scenario | system | hmalloc |
 |---|---:|---:|
@@ -101,35 +106,45 @@ preload jemalloc or mimalloc and run the same `./build/bench`.
 | producer/consumer (free on another thread) | 4.5 Mops/s | 9.0 Mops/s |
 | 10 threads, each churning independently | 27 Mops/s | 653 Mops/s |
 
-The single-thread gap comes from how little the fast path does (about 7 ns per
-op). The more interesting result is the last row: because each thread allocates
-out of its own heap, throughput climbs with core count instead of flattening, and
-the system allocator actually slows down as threads contend for it.
+The single-thread gap comes from how little the fast path has to do, which works
+out to roughly 7 nanoseconds per operation. The more interesting result is the
+last row. Because every thread allocates out of its own heap, throughput climbs
+with the core count instead of flattening, and the system allocator actually slows
+down as its threads contend for shared state.
 
-The catch shows up in the fragmentation benchmark, where hmalloc holds a larger
-resident set for the same set of live objects (around 616 MiB versus 484 MiB).
-That's the price of size classes — rounding every request up to a class wastes up
-to ~25% per object, and pages are handed out whole. The speed is paid for partly
-in memory. `./build/bench frag` prints it.
+The cost shows up in the fragmentation benchmark, where hmalloc holds a larger
+resident set than the system allocator for the same set of live objects, around
+616 MiB against 484 MiB. This is the price of size classes. Rounding every request
+up to a class wastes as much as a quarter of each object, and pages are handed out
+whole, so the speed is paid for partly in memory. You can see the figure for
+yourself by running `./build/bench frag`.
 
 ## What's done
 
-- [x] **M0** — scaffold, build system, test and benchmark harness
-- [x] **M1** — OS layer: `mmap`'d aligned segments, large-object passthrough
-- [x] **M2** — size classes and the free-list allocator
-- [x] **M3** — segment/page metadata and O(1) pointer → page lookup
-- [x] **M4** — per-thread heaps and the lock-free fast path
-- [x] **M5** — cross-thread frees (atomic per-page list) and collection
-- [x] **M6** — central heap, page/segment recycling, thread-exit reclaim
-- [x] **M7** — benchmarks (against system malloc; preload others to compare)
-- [x] **M8** — full API, `hm_stats`, drop-in override
+Each milestone below is implemented and committed.
 
-A few things I'd do next: when a thread exits with pages that still hold live
-objects, adopt those pages into another running heap instead of waiting for the
-central sweep to reclaim them once they empty; replace the division in the
-interior-pointer `free` path with a precomputed reciprocal multiply; and return
-memory to the OS more eagerly by purging idle pages.
+- M0 set up the scaffold, the build system, and the test and benchmark harness.
+- M1 added the OS layer, which maps aligned segments and serves large objects
+  directly.
+- M2 added the size classes and the free-list allocator.
+- M3 added the segment and page metadata and the constant-time recovery of a page
+  from any pointer.
+- M4 added the per-thread heaps and the lock-free fast path.
+- M5 added cross-thread frees through an atomic per-page list, along with the
+  collection step that folds them back in.
+- M6 added the central heap, page and segment recycling, and reclamation of a
+  thread's pages when it exits.
+- M7 added the benchmark suite, which measures against the system allocator and
+  lets you preload others to compare.
+- M8 finished the public API, added `hm_stats`, and built the drop-in override.
+
+There are a few things worth doing next. When a thread exits while it still holds
+pages with live objects, those pages could be adopted into another running heap
+instead of waiting for the central sweep to reclaim them once they empty. The
+division in the interior-pointer path of `free` could be replaced with a
+precomputed reciprocal multiply. Memory could be returned to the operating system
+more eagerly by purging idle pages.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+This project is released under the MIT license. See the LICENSE file for details.
