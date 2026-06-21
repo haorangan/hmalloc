@@ -92,7 +92,9 @@ int do_posix_memalign(void **out, std::size_t alignment, std::size_t size) {
   if (out == nullptr) return EINVAL;
   if (alignment < sizeof(void *) || (alignment & (alignment - 1)) != 0)
     return EINVAL;
-  void *p = hm_aligned_alloc(alignment, size);
+  // POSIX: size 0 succeeds (must not return ENOMEM). hmalloc returns NULL for
+  // size 0, so request a minimal freeable block to match the common contract.
+  void *p = hm_aligned_alloc(alignment, size != 0 ? size : 1);
   if (p == nullptr) return ENOMEM;
   *out = p;
   return 0;

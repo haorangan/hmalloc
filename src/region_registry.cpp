@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <new>
 
 #include "constants.h"
 #include "os.h"
@@ -30,15 +31,26 @@ struct Registry {
   std::size_t tombs = 0;   // tombstones
 };
 
+// Never destroyed: the override's free path (region_owns) can run during static
+// destruction at process exit, so the registry's mutex must outlive every other
+// static/thread-local object rather than race their teardown order (mirrors the
+// idiom in central.cpp).
 Registry &reg() {
-  static Registry r;
-  return r;
+  alignas(Registry) static unsigned char storage[sizeof(Registry)];
+  static Registry *r = new (storage) Registry();
+  return *r;
+}
+
+// Page-rounded byte size of a `cap`-slot table. alloc_slots maps this many bytes,
+// so frees MUST use the same value — otherwise (e.g. cap=1024 -> 8 KiB rounded up
+// to a 16 KiB page) part of the mapping leaks and accounting drifts.
+std::size_t slots_bytes(std::size_t cap) {
+  const std::size_t ps = os_page_size();
+  return (cap * sizeof(std::uintptr_t) + ps - 1) & ~(ps - 1);
 }
 
 std::uintptr_t *alloc_slots(std::size_t cap) {
-  const std::size_t bytes = cap * sizeof(std::uintptr_t);
-  const std::size_t ps = os_page_size();
-  void *m = os_alloc_aligned((bytes + ps - 1) & ~(ps - 1), ps);
+  void *m = os_alloc_aligned(slots_bytes(cap), os_page_size());
   return static_cast<std::uintptr_t *>(m);  // zero-filled by the OS == all EMPTY
 }
 
@@ -67,7 +79,7 @@ void grow_locked(Registry &r, std::size_t new_cap) {
   r.slots = fresh;
   r.cap = new_cap;
   r.tombs = 0;
-  if (old != nullptr) os_free(old, old_cap * sizeof(std::uintptr_t));
+  if (old != nullptr) os_free(old, slots_bytes(old_cap));
 }
 
 }  // namespace

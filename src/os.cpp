@@ -85,6 +85,7 @@ void *os_alloc_aligned(std::size_t size, std::size_t alignment) {
   //   base            aligned                 aligned+size      base+over
   //    |--- head -->|--------- size ---------|<---- tail ----------|
   const std::size_t over = size + alignment;
+  if (over < size) return nullptr;  // over-map size overflowed: reject
   auto base = reinterpret_cast<std::uintptr_t>(raw_mmap(over));
   if (base == 0) return nullptr;
 

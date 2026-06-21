@@ -16,14 +16,20 @@ thread_local Heap *t_heap = nullptr;
 namespace {
 // Registry of all live heaps, so hm_stats() can sum per-thread counters. Touched
 // only on thread create/exit and by hm_stats(), never on the allocation path.
-std::mutex g_registry_mtx;
+// The mutex is never destroyed: heap_destroy() runs from thread-exit/atexit
+// destructors during shutdown and must not lock a torn-down mutex.
+std::mutex &registry_mtx() {
+  alignas(std::mutex) static unsigned char storage[sizeof(std::mutex)];
+  static std::mutex *m = new (storage) std::mutex();
+  return *m;
+}
 Heap *g_registry = nullptr;
 }  // namespace
 
 void heap_global_counts(unsigned long long *malloc_count,
                         unsigned long long *fast, unsigned long long *slow) {
   unsigned long long m = 0, f = 0, s = 0;
-  std::lock_guard<std::mutex> lk(g_registry_mtx);
+  std::lock_guard<std::mutex> lk(registry_mtx());
   for (Heap *h = g_registry; h != nullptr; h = h->reg_next) {
     m += h->n_malloc.load(std::memory_order_relaxed);
     f += h->n_fast.load(std::memory_order_relaxed);
@@ -139,7 +145,7 @@ void heap_destroy(Heap *h) {
     h->pages[c] = &g_empty_page;
   }
   {
-    std::lock_guard<std::mutex> lk(g_registry_mtx);
+    std::lock_guard<std::mutex> lk(registry_mtx());
     for (Heap **pp = &g_registry; *pp != nullptr; pp = &(*pp)->reg_next) {
       if (*pp == h) {
         *pp = h->reg_next;
@@ -170,7 +176,7 @@ Heap *heap_create() {
   Heap *h = new (mem) Heap();
   for (std::uint32_t c = 0; c < kNumSizeClasses; ++c) h->pages[c] = &g_empty_page;
   {
-    std::lock_guard<std::mutex> lk(g_registry_mtx);
+    std::lock_guard<std::mutex> lk(registry_mtx());
     h->reg_next = g_registry;
     g_registry = h;
   }

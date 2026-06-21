@@ -232,4 +232,19 @@ TEST(randomized_churn) {
     }
 }
 
+TEST(huge_sizes_fail_cleanly) {
+  // Near-SIZE_MAX requests must return null, not overflow internal size math
+  // (e.g. the large-path round-up or the OS over-map). Regression for the
+  // os_alloc_aligned over-map overflow found in review.
+  CHECK(hm_malloc(SIZE_MAX) == nullptr);
+  CHECK(hm_malloc(SIZE_MAX - 4096) == nullptr);
+  CHECK(hm_malloc(SIZE_MAX - (static_cast<std::size_t>(1) << 22) + 1) == nullptr);
+  CHECK(hm_calloc(1, SIZE_MAX) == nullptr);
+  CHECK(hm_aligned_alloc(64, SIZE_MAX) == nullptr);
+  // A modest large allocation still works right after the failures.
+  void *p = hm_malloc(100000);
+  CHECK(p != nullptr);
+  hm_free(p);
+}
+
 int main() { return hm_test::run_all(); }
